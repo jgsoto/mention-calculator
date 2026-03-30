@@ -3,7 +3,6 @@ package com.golden.mention_job.services;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.*;
-
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -24,18 +23,16 @@ public class MentionService {
             ZoneId zone = ZoneId.of("UTC");
 
             //LocalDate hoyDate = LocalDate.now(zone);
-            LocalDate hoyDate = LocalDate.of(2026,03,30); // test
+            LocalDate hoyDate = LocalDate.of(2026, 04, 07); // test
 
             LocalDate ayerDate = hoyDate.minusDays(1);
 
             String hoyStr = hoyDate.toString();
             String ayerStr = ayerDate.toString();
 
-            // 🔥 AHORA devuelve Document (count + idE + qrID)
             Map<String, Document> hoyMap = obtenerAcumuladoPorQuery(hoyStr);
             Map<String, Document> ayerMap = obtenerAcumuladoPorQuery(ayerStr);
 
-            // obtener acumulado del día anterior (desde querycount)
             Document docAyer = mongoTemplate
                     .getCollection("querycount")
                     .find(new Document("date", ayerStr))
@@ -64,12 +61,21 @@ public class MentionService {
                 int hoyVal = hoyData != null ? hoyData.getInteger("count", 0) : 0;
                 int ayerVal = ayerData != null ? ayerData.getInteger("count", 0) : 0;
 
+                Integer hoyServiceMonth = hoyData != null ? hoyData.getInteger("serviceMonth") : null;
+                Integer ayerServiceMonth = ayerData != null ? ayerData.getInteger("serviceMonth") : null;
+
                 int usoReal;
 
-                if (hoyVal >= ayerVal) {
+                if (ayerServiceMonth != null && hoyServiceMonth != null && hoyServiceMonth.equals(ayerServiceMonth)) {
+                    // mismo mes de servicio
                     usoReal = hoyVal - ayerVal;
+
+                    if (usoReal < 0) {
+                        usoReal = hoyVal; // seguridad
+                    }
+
                 } else {
-                    // reinicio de mes
+                    // nuevo mes de servicio
                     usoReal = hoyVal;
                 }
 
@@ -78,8 +84,8 @@ public class MentionService {
                 resultadoFinal.add(new Document()
                         .append("query", query)
                         .append("count", usoReal)
-                        .append("idE", hoyData.getString("idE"))     // ✅ NUEVO
-                        .append("qrId", hoyData.getString("qrId"))   // ✅ NUEVO
+                        .append("idE", hoyData.getString("idE"))
+                        .append("qrId", hoyData.getString("qrId"))
                         .append("serviceMonth", hoyData.getInteger("serviceMonth"))
                 );
             }
@@ -105,7 +111,6 @@ public class MentionService {
         }
     }
 
-    // 🔥 MÉTODO MODIFICADO
     private Map<String, Document> obtenerAcumuladoPorQuery(String fecha) {
 
         Aggregation aggregation = Aggregation.newAggregation(
@@ -118,20 +123,20 @@ public class MentionService {
                                         .withTimezone(DateOperators.Timezone.valueOf("UTC"))
                         ).as("date")
                         .andExpression("toLower(countDetails.query)").as("query")
-                        .and("idE").as("idE")        // ✅ NUEVO
-                        .and("qrId").as("qrId")      // ✅ NUEVO
+                        .and("idE").as("idE")
+                        .and("qrId").as("qrId")
                         .and("serviceMonth").as("serviceMonth")
                         .and(ConvertOperators.ToInt.toInt("$countDetails.count")).as("count"),
                 Aggregation.match(Criteria.where("date").is(fecha)),
                 Aggregation.group("query")
                         .sum("count").as("total")
-                        .first("idE").as("idE")      // ✅ IMPORTANTE
-                        .first("qrId").as("qrId")    // ✅ IMPORTANTE
+                        .first("idE").as("idE")
+                        .first("qrId").as("qrId")
                         .first("serviceMonth").as("serviceMonth")
         );
 
-        AggregationResults<Document> results =
-                mongoTemplate.aggregate(aggregation, "querycount", Document.class);
+        AggregationResults<Document> results
+                = mongoTemplate.aggregate(aggregation, "querycount", Document.class);
 
         Map<String, Document> map = new HashMap<>();
 
