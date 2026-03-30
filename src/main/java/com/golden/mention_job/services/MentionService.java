@@ -17,65 +17,53 @@ public class MentionService {
     @Autowired
     private MongoTemplate mongoTemplate;
 
+    private static final String COLLECTION_QUERYCOUNT = "querycount";
+    private static final String COLLECTION_DAILY = "daily_mentions";
+    private static final ZoneId ZONE = ZoneId.of("UTC");
+
     public void procesarMencionesDelDiaAnterior() {
 
         try {
-            ZoneId zone = ZoneId.of("UTC");
 
-            //LocalDate hoyDate = LocalDate.now(zone);
-            LocalDate hoyDate = LocalDate.of(2026, 04, 07); // test
-
+            //LocalDate hoyDate = LocalDate.now(ZONE);
+            LocalDate hoyDate = LocalDate.of(2026, 04, 8); // test
             LocalDate ayerDate = hoyDate.minusDays(1);
 
             String hoyStr = hoyDate.toString();
             String ayerStr = ayerDate.toString();
 
+            // evitar duplicados antes de procesar
+            if (mongoTemplate.exists(new Query(Criteria.where("date").is(hoyStr)), COLLECTION_DAILY)) {
+                System.out.println("Ya existe: " + hoyStr);
+                return;
+            }
+
             Map<String, Document> hoyMap = obtenerAcumuladoPorQuery(hoyStr);
             Map<String, Document> ayerMap = obtenerAcumuladoPorQuery(ayerStr);
 
-            Document docAyer = mongoTemplate
-                    .getCollection("querycount")
-                    .find(new Document("date", ayerStr))
-                    .first();
-
-            if (docAyer != null) {
-                List<Document> queries = (List<Document>) docAyer.get("queries");
-
-                for (Document q : queries) {
-                    ayerMap.put(
-                            q.getString("query"),
-                            new Document()
-                                    .append("count", q.getInteger("count"))
-                    );
-                }
-            }
-
-            List<Document> resultadoFinal = new ArrayList<>();
+            List<Document> resultadoFinal = new ArrayList<>(hoyMap.size());
             int totalDia = 0;
 
-            for (String query : hoyMap.keySet()) {
+            for (Map.Entry<String, Document> entry : hoyMap.entrySet()) {
 
-                Document hoyData = hoyMap.get(query);
+                String query = entry.getKey();
+                Document hoyData = entry.getValue();
                 Document ayerData = ayerMap.get(query);
 
-                int hoyVal = hoyData != null ? hoyData.getInteger("count", 0) : 0;
+                int hoyVal = hoyData.getInteger("count", 0);
                 int ayerVal = ayerData != null ? ayerData.getInteger("count", 0) : 0;
 
-                Integer hoyServiceMonth = hoyData != null ? hoyData.getInteger("serviceMonth") : null;
+                Integer hoyServiceMonth = hoyData.getInteger("serviceMonth");
                 Integer ayerServiceMonth = ayerData != null ? ayerData.getInteger("serviceMonth") : null;
 
                 int usoReal;
 
-                if (ayerServiceMonth != null && hoyServiceMonth != null && hoyServiceMonth.equals(ayerServiceMonth)) {
-                    // mismo mes de servicio
+                if (Objects.equals(hoyServiceMonth, ayerServiceMonth)) {
                     usoReal = hoyVal - ayerVal;
-
                     if (usoReal < 0) {
-                        usoReal = hoyVal; // seguridad
+                        usoReal = hoyVal;
                     }
-
                 } else {
-                    // nuevo mes de servicio
                     usoReal = hoyVal;
                 }
 
@@ -86,15 +74,7 @@ public class MentionService {
                         .append("count", usoReal)
                         .append("idE", hoyData.getString("idE"))
                         .append("qrId", hoyData.getString("qrId"))
-                        .append("serviceMonth", hoyData.getInteger("serviceMonth"))
-                );
-            }
-
-            // evitar duplicados
-            Query queryCheck = new Query(Criteria.where("date").is(hoyStr));
-            if (mongoTemplate.exists(queryCheck, "daily_mentions")) {
-                System.out.println("Ya existe: " + hoyStr);
-                return;
+                        .append("serviceMonth", hoyServiceMonth));
             }
 
             Document finalDoc = new Document()
@@ -102,7 +82,7 @@ public class MentionService {
                     .append("totalMentions", totalDia)
                     .append("queries", resultadoFinal);
 
-            mongoTemplate.getCollection("daily_mentions").insertOne(finalDoc);
+            mongoTemplate.getCollection(COLLECTION_DAILY).insertOne(finalDoc);
 
             System.out.println("Guardado correcto: " + hoyStr);
 
@@ -136,18 +116,19 @@ public class MentionService {
         );
 
         AggregationResults<Document> results
-                = mongoTemplate.aggregate(aggregation, "querycount", Document.class);
+                = mongoTemplate.aggregate(aggregation, COLLECTION_QUERYCOUNT, Document.class);
 
         Map<String, Document> map = new HashMap<>();
 
         for (Document doc : results) {
-            String query = doc.getString("_id");
 
-            map.put(query, new Document()
-                    .append("count", doc.getInteger("total"))
-                    .append("idE", doc.getString("idE"))
-                    .append("qrId", doc.getString("qrId"))
-                    .append("serviceMonth", doc.getInteger("serviceMonth"))
+            map.put(
+                    doc.getString("_id"),
+                    new Document()
+                            .append("count", doc.getInteger("total"))
+                            .append("idE", doc.getString("idE"))
+                            .append("qrId", doc.getString("qrId"))
+                            .append("serviceMonth", doc.getInteger("serviceMonth"))
             );
         }
 
