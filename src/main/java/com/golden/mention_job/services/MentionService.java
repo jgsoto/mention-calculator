@@ -2,9 +2,14 @@ package com.golden.mention_job.services;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.util.*;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.aggregation.*;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -26,65 +31,80 @@ public class MentionService {
         try {
 
             //LocalDate hoyDate = LocalDate.now(ZONE);
-            LocalDate hoyDate = LocalDate.of(2026, 04, 8); // test
-            LocalDate ayerDate = hoyDate.minusDays(1);
+            LocalDate hoyDate = LocalDate.of(2026, 4, 8); // test
 
+            Date hoyDateMongo = Date.from(hoyDate.atStartOfDay(ZONE).toInstant());
             String hoyStr = hoyDate.toString();
-            String ayerStr = ayerDate.toString();
-
-            // evitar duplicados antes de procesar
-            if (mongoTemplate.exists(new Query(Criteria.where("date").is(hoyStr)), COLLECTION_DAILY)) {
-                System.out.println("Ya existe: " + hoyStr);
-                return;
-            }
 
             Map<String, Document> hoyMap = obtenerAcumuladoPorQuery(hoyStr);
-            Map<String, Document> ayerMap = obtenerAcumuladoPorQuery(ayerStr);
-
-            List<Document> resultadoFinal = new ArrayList<>(hoyMap.size());
-            int totalDia = 0;
+            
+            int insertados = 0;
 
             for (Map.Entry<String, Document> entry : hoyMap.entrySet()) {
 
-                String query = entry.getKey();
                 Document hoyData = entry.getValue();
-                Document ayerData = ayerMap.get(query);
 
                 int hoyVal = hoyData.getInteger("count", 0);
-                int ayerVal = ayerData != null ? ayerData.getInteger("count", 0) : 0;
-
                 Integer hoyServiceMonth = hoyData.getInteger("serviceMonth");
-                Integer ayerServiceMonth = ayerData != null ? ayerData.getInteger("serviceMonth") : null;
+
+                String idE = hoyData.getString("idE");
+                String query = hoyData.getString("query");
+
+                // evitar duplicados
+                Query existeQuery = new Query();
+
+                existeQuery.addCriteria(
+                        Criteria.where("date").is(hoyDateMongo)
+                                .and("idE").is(idE)
+                                .and("query").is(query)
+                );
+
+                if (mongoTemplate.exists(existeQuery, COLLECTION_DAILY)) {
+                    continue;
+                }
+
+                Document ultimoRegistro = obtenerUltimoRegistroPrevio(idE, query, hoyDateMongo);
 
                 int usoReal;
 
-                if (Objects.equals(hoyServiceMonth, ayerServiceMonth)) {
-                    usoReal = hoyVal - ayerVal;
-                    if (usoReal < 0) {
+                if (ultimoRegistro != null) {
+
+                    int ultimoCount = ultimoRegistro.getInteger("count", 0);
+                    Integer ultimoServiceMonth = ultimoRegistro.getInteger("serviceMonth");
+
+                    if (Objects.equals(hoyServiceMonth, ultimoServiceMonth)) {
+
+                        usoReal = hoyVal - ultimoCount;
+
+                        if (usoReal < 0) {
+                            usoReal = hoyVal;
+                        }
+
+                    } else {
                         usoReal = hoyVal;
                     }
+
                 } else {
                     usoReal = hoyVal;
                 }
 
-                totalDia += usoReal;
-
-                resultadoFinal.add(new Document()
+                Document doc = new Document()
+                        .append("date", hoyDateMongo)
                         .append("query", query)
                         .append("count", usoReal)
-                        .append("idE", hoyData.getString("idE"))
+                        .append("idE", idE)
                         .append("qrId", hoyData.getString("qrId"))
-                        .append("serviceMonth", hoyServiceMonth));
+                        .append("serviceMonth", hoyServiceMonth);
+
+                mongoTemplate.getCollection(COLLECTION_DAILY).insertOne(doc);
+                insertados++;
             }
 
-            Document finalDoc = new Document()
-                    .append("date", hoyStr)
-                    .append("totalMentions", totalDia)
-                    .append("queries", resultadoFinal);
-
-            mongoTemplate.getCollection(COLLECTION_DAILY).insertOne(finalDoc);
-
-            System.out.println("Guardado correcto: " + hoyStr);
+            if (insertados > 0) {
+                System.out.println("Guardado correcto: " + hoyStr + " registros: " + insertados);
+            } else {
+                System.out.println("No había registros nuevos para guardar: " + hoyStr);
+            }
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -108,11 +128,17 @@ public class MentionService {
                         .and("serviceMonth").as("serviceMonth")
                         .and(ConvertOperators.ToInt.toInt("$countDetails.count")).as("count"),
                 Aggregation.match(Criteria.where("date").is(fecha)),
-                Aggregation.group("query")
+                Aggregation.group(
+                        Fields.from(
+                                Fields.field("idE"),
+                                Fields.field("query")
+                        )
+                )
                         .sum("count").as("total")
                         .first("idE").as("idE")
                         .first("qrId").as("qrId")
                         .first("serviceMonth").as("serviceMonth")
+                        .first("query").as("query")
         );
 
         AggregationResults<Document> results
@@ -122,16 +148,37 @@ public class MentionService {
 
         for (Document doc : results) {
 
+            String idE = doc.getString("idE");
+            String query = doc.getString("query");
+
+            String key = idE + "|" + query;
+
             map.put(
-                    doc.getString("_id"),
+                    key,
                     new Document()
                             .append("count", doc.getInteger("total"))
-                            .append("idE", doc.getString("idE"))
+                            .append("idE", idE)
                             .append("qrId", doc.getString("qrId"))
                             .append("serviceMonth", doc.getInteger("serviceMonth"))
+                            .append("query", query)
             );
         }
 
         return map;
+    }
+
+    private Document obtenerUltimoRegistroPrevio(String idE, String query, Date fechaActual) {
+
+        Query q = new Query();
+
+        q.addCriteria(
+                Criteria.where("query").is(query)
+                        .and("idE").is(idE)
+                        .and("date").lt(fechaActual)
+        );
+
+        q.with(Sort.by(Sort.Direction.DESC, "date"));
+
+        return mongoTemplate.findOne(q, Document.class, COLLECTION_DAILY);
     }
 }
