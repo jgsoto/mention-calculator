@@ -6,7 +6,6 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
@@ -30,13 +29,13 @@ public class MentionService {
 
         try {
 
-            LocalDate hoyDate = LocalDate.of(2026, 4, 8); // test
-            // LocalDate hoyDate = LocalDate.now(ZONE).minusDays(1);
+            //LocalDate fechaProceso = LocalDate.of(2026, 4, 9); // test
+            LocalDate fechaProceso = LocalDate.now(ZONE).minusDays(1);
 
-            Date hoyDateMongo = Date.from(hoyDate.atStartOfDay(ZONE).toInstant());
-            String hoyStr = hoyDate.toString();
+            Date fechaMongo = Date.from(fechaProceso.atStartOfDay(ZONE).toInstant());
+            String fechaStr = fechaProceso.toString();
 
-            Map<String, Document> hoyMap = obtenerAcumuladoPorQuery(hoyStr);
+            Map<String, Document> hoyMap = obtenerAcumuladoPorQuery();
 
             int insertados = 0;
 
@@ -49,7 +48,7 @@ public class MentionService {
                 String query = hoyData.getString("query");
 
                 Query existeQuery = new Query(
-                        Criteria.where("date").is(hoyDateMongo)
+                        Criteria.where("date").is(fechaMongo)
                                 .and("idE").is(idE)
                                 .and("query").is(query)
                 );
@@ -58,7 +57,7 @@ public class MentionService {
                     continue;
                 }
 
-                Document ultimoRegistro = obtenerUltimoRegistroPrevio(idE, query, hoyDateMongo);
+                Document ultimoRegistro = obtenerUltimoRegistroPrevio(idE, query, fechaMongo);
 
                 int usoReal = hoyVal;
 
@@ -68,7 +67,9 @@ public class MentionService {
                     Integer ultimoServiceMonth = ultimoRegistro.getInteger("serviceMonth");
 
                     if (Objects.equals(hoyServiceMonth, ultimoServiceMonth)) {
+
                         usoReal = hoyVal - ultimoCount;
+
                         if (usoReal < 0) {
                             usoReal = hoyVal;
                         }
@@ -76,7 +77,7 @@ public class MentionService {
                 }
 
                 Document doc = new Document()
-                        .append("date", hoyDateMongo)
+                        .append("date", fechaMongo)
                         .append("query", query)
                         .append("count", usoReal)
                         .append("idE", idE)
@@ -88,43 +89,42 @@ public class MentionService {
             }
 
             System.out.println(insertados > 0
-                    ? "Guardado correcto: " + hoyStr + " registros: " + insertados
-                    : "No había registros nuevos para guardar: " + hoyStr);
+                    ? "Guardado correcto: " + fechaStr + " registros: " + insertados
+                    : "No había registros nuevos para guardar: " + fechaStr);
 
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private Map<String, Document> obtenerAcumuladoPorQuery(String fecha) {
+    private Map<String, Document> obtenerAcumuladoPorQuery() {
 
         Aggregation aggregation = Aggregation.newAggregation(
-                Aggregation.unwind("countDetails"),
+                // 🔹 ignorar registros históricos
+                Aggregation.match(
+                        Criteria.where("hist").is(false)
+                ),
                 Aggregation.project()
-                        .and(DateOperators.DateToString
-                                .dateOf("countDetails.date")
-                                .toString("%Y-%m-%d")
-                                .withTimezone(DateOperators.Timezone.valueOf("UTC")))
-                        .as("date")
-                        .andExpression("toLower(countDetails.query)").as("query")
                         .and("idE").as("idE")
                         .and("qrId").as("qrId")
                         .and("serviceMonth").as("serviceMonth")
-                        .and(ConvertOperators.ToInt.toInt("$countDetails.count")).as("count"),
-                Aggregation.match(Criteria.where("date").is(fecha)),
-                Aggregation.group(Fields.from(
-                        Fields.field("idE"),
-                        Fields.field("query")
-                ))
-                        .sum("count").as("total")
+                        .and(ConvertOperators.ToInt.toInt("$totalCount")).as("count")
+                        .and(ArrayOperators.ArrayElemAt.arrayOf("countDetails.query").elementAt(0)).as("query"),
+                Aggregation.group(
+                        Fields.from(
+                                Fields.field("idE"),
+                                Fields.field("query")
+                        )
+                )
+                        .sum("count").as("count")
                         .first("idE").as("idE")
                         .first("qrId").as("qrId")
                         .first("serviceMonth").as("serviceMonth")
                         .first("query").as("query")
         );
 
-        AggregationResults<Document> results =
-                mongoTemplate.aggregate(aggregation, COLLECTION_QUERYCOUNT, Document.class);
+        AggregationResults<Document> results
+                = mongoTemplate.aggregate(aggregation, COLLECTION_QUERYCOUNT, Document.class);
 
         Map<String, Document> map = new HashMap<>();
 
@@ -135,7 +135,7 @@ public class MentionService {
 
             map.put(idE + "|" + query,
                     new Document()
-                            .append("count", doc.getInteger("total"))
+                            .append("count", doc.getInteger("count"))
                             .append("idE", idE)
                             .append("qrId", doc.getString("qrId"))
                             .append("serviceMonth", doc.getInteger("serviceMonth"))
@@ -149,8 +149,8 @@ public class MentionService {
     private Document obtenerUltimoRegistroPrevio(String idE, String query, Date fechaActual) {
 
         Query q = new Query(
-                Criteria.where("query").is(query)
-                        .and("idE").is(idE)
+                Criteria.where("idE").is(idE)
+                        .and("query").is(query)
                         .and("date").lt(fechaActual)
         ).with(Sort.by(Sort.Direction.DESC, "date"));
 
