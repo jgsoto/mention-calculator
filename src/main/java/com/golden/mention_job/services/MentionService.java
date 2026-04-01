@@ -30,19 +30,17 @@ public class MentionService {
 
         try {
 
-            //LocalDate hoyDate = LocalDate.now(ZONE);
             LocalDate hoyDate = LocalDate.of(2026, 4, 8); // test
+            // LocalDate hoyDate = LocalDate.now(ZONE).minusDays(1);
 
             Date hoyDateMongo = Date.from(hoyDate.atStartOfDay(ZONE).toInstant());
             String hoyStr = hoyDate.toString();
 
             Map<String, Document> hoyMap = obtenerAcumuladoPorQuery(hoyStr);
-            
+
             int insertados = 0;
 
-            for (Map.Entry<String, Document> entry : hoyMap.entrySet()) {
-
-                Document hoyData = entry.getValue();
+            for (Document hoyData : hoyMap.values()) {
 
                 int hoyVal = hoyData.getInteger("count", 0);
                 Integer hoyServiceMonth = hoyData.getInteger("serviceMonth");
@@ -50,10 +48,7 @@ public class MentionService {
                 String idE = hoyData.getString("idE");
                 String query = hoyData.getString("query");
 
-                // evitar duplicados
-                Query existeQuery = new Query();
-
-                existeQuery.addCriteria(
+                Query existeQuery = new Query(
                         Criteria.where("date").is(hoyDateMongo)
                                 .and("idE").is(idE)
                                 .and("query").is(query)
@@ -65,7 +60,7 @@ public class MentionService {
 
                 Document ultimoRegistro = obtenerUltimoRegistroPrevio(idE, query, hoyDateMongo);
 
-                int usoReal;
+                int usoReal = hoyVal;
 
                 if (ultimoRegistro != null) {
 
@@ -73,19 +68,11 @@ public class MentionService {
                     Integer ultimoServiceMonth = ultimoRegistro.getInteger("serviceMonth");
 
                     if (Objects.equals(hoyServiceMonth, ultimoServiceMonth)) {
-
                         usoReal = hoyVal - ultimoCount;
-
                         if (usoReal < 0) {
                             usoReal = hoyVal;
                         }
-
-                    } else {
-                        usoReal = hoyVal;
                     }
-
-                } else {
-                    usoReal = hoyVal;
                 }
 
                 Document doc = new Document()
@@ -100,11 +87,9 @@ public class MentionService {
                 insertados++;
             }
 
-            if (insertados > 0) {
-                System.out.println("Guardado correcto: " + hoyStr + " registros: " + insertados);
-            } else {
-                System.out.println("No había registros nuevos para guardar: " + hoyStr);
-            }
+            System.out.println(insertados > 0
+                    ? "Guardado correcto: " + hoyStr + " registros: " + insertados
+                    : "No había registros nuevos para guardar: " + hoyStr);
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -116,24 +101,21 @@ public class MentionService {
         Aggregation aggregation = Aggregation.newAggregation(
                 Aggregation.unwind("countDetails"),
                 Aggregation.project()
-                        .and(
-                                DateOperators.DateToString
-                                        .dateOf("countDetails.date")
-                                        .toString("%Y-%m-%d")
-                                        .withTimezone(DateOperators.Timezone.valueOf("UTC"))
-                        ).as("date")
+                        .and(DateOperators.DateToString
+                                .dateOf("countDetails.date")
+                                .toString("%Y-%m-%d")
+                                .withTimezone(DateOperators.Timezone.valueOf("UTC")))
+                        .as("date")
                         .andExpression("toLower(countDetails.query)").as("query")
                         .and("idE").as("idE")
                         .and("qrId").as("qrId")
                         .and("serviceMonth").as("serviceMonth")
                         .and(ConvertOperators.ToInt.toInt("$countDetails.count")).as("count"),
                 Aggregation.match(Criteria.where("date").is(fecha)),
-                Aggregation.group(
-                        Fields.from(
-                                Fields.field("idE"),
-                                Fields.field("query")
-                        )
-                )
+                Aggregation.group(Fields.from(
+                        Fields.field("idE"),
+                        Fields.field("query")
+                ))
                         .sum("count").as("total")
                         .first("idE").as("idE")
                         .first("qrId").as("qrId")
@@ -141,8 +123,8 @@ public class MentionService {
                         .first("query").as("query")
         );
 
-        AggregationResults<Document> results
-                = mongoTemplate.aggregate(aggregation, COLLECTION_QUERYCOUNT, Document.class);
+        AggregationResults<Document> results =
+                mongoTemplate.aggregate(aggregation, COLLECTION_QUERYCOUNT, Document.class);
 
         Map<String, Document> map = new HashMap<>();
 
@@ -151,10 +133,7 @@ public class MentionService {
             String idE = doc.getString("idE");
             String query = doc.getString("query");
 
-            String key = idE + "|" + query;
-
-            map.put(
-                    key,
+            map.put(idE + "|" + query,
                     new Document()
                             .append("count", doc.getInteger("total"))
                             .append("idE", idE)
@@ -169,15 +148,11 @@ public class MentionService {
 
     private Document obtenerUltimoRegistroPrevio(String idE, String query, Date fechaActual) {
 
-        Query q = new Query();
-
-        q.addCriteria(
+        Query q = new Query(
                 Criteria.where("query").is(query)
                         .and("idE").is(idE)
                         .and("date").lt(fechaActual)
-        );
-
-        q.with(Sort.by(Sort.Direction.DESC, "date"));
+        ).with(Sort.by(Sort.Direction.DESC, "date"));
 
         return mongoTemplate.findOne(q, Document.class, COLLECTION_DAILY);
     }
