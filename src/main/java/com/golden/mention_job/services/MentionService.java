@@ -100,7 +100,6 @@ public class MentionService {
     private Map<String, Document> obtenerAcumuladoPorQuery() {
 
         Aggregation aggregation = Aggregation.newAggregation(
-                // 🔹 ignorar registros históricos
                 Aggregation.match(
                         Criteria.where("hist").is(false)
                 ),
